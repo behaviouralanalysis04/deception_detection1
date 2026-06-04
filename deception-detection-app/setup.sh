@@ -1,5 +1,3 @@
 #!/bin/bash
-# Install system dependencies for dlib
-apt-get update
-apt-get install -y cmake build-essential libopenblas-dev liblapack-dev libx11-dev
+# Install dlib with pip after system packages are ready
 pip install dlib==19.24.2
