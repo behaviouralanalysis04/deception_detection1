@@ -1,17 +1,14 @@
 [server]
-maxUploadSize = 200
-enableXsrfProtection = false
-enableCORS = false
-
-[theme]
-primaryColor = "#667eea"
-backgroundColor = "#0f0c29"
-secondaryBackgroundColor = "#1a163a"
-textColor = "#ffffff"
-font = "sans serif"
+maxUploadSize = 100
+enableXsrfProtection = true
 
 [browser]
 gatherUsageStats = false
 
-[runner]
-magicEnabled = false
+[theme]
+base = "dark"
+primaryColor = "#667eea"
+backgroundColor = "#0f0c29"
+secondaryBackgroundColor = "#1a1638"
+textColor = "#ffffff"
+font = "sans serif"
