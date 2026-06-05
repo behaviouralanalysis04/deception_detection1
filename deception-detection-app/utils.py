@@ -1,6 +1,24 @@
 import numpy as np
 import cv2
 import dlib
+import os
+import urllib.request
+import bz2
+import shutil
+
+# Download shape predictor if not exists
+def download_shape_predictor():
+    if not os.path.exists("shape_predictor_68_face_landmarks.dat"):
+        print("Downloading shape predictor...")
+        url = "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2"
+        urllib.request.urlretrieve(url, "tmp.bz2")
+        with bz2.open("tmp.bz2", 'rb') as src, open("shape_predictor_68_face_landmarks.dat", "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        os.remove("tmp.bz2")
+        print("Done.")
+
+# Download on import
+download_shape_predictor()
 
 # Initialize dlib
 detector = dlib.get_frontal_face_detector()
@@ -62,6 +80,8 @@ def facial_asymmetry(landmarks):
     right_indices = [45, 46, 47, 54, 53, 52, 26, 25, 24]
     left_pts = np.array([landmarks[i] for i in left_indices if i < len(landmarks)])
     right_pts = np.array([landmarks[i] for i in right_indices if i < len(landmarks)])
+    if len(left_pts) == 0 or len(right_pts) == 0:
+        return 0
     return np.linalg.norm(np.mean(left_pts, axis=0) - np.mean(right_pts, axis=0))
 
 def gaze_direction(landmarks, frame_width):
@@ -95,7 +115,7 @@ def head_pose(landmarks, w, h):
 
     rmat, _ = cv2.Rodrigues(rvec)
     angles, _, _, _, _, _ = cv2.RQDecomp3x3(rmat)
-    return angles[0], angles[1], angles[2]  # pitch, yaw, roll
+    return angles[0], angles[1], angles[2]
 
 def micro_expression_magnitude(prev_landmarks, curr_landmarks):
     if prev_landmarks is None:
