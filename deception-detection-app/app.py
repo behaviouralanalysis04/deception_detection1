@@ -1,10 +1,15 @@
-# Complete Deception Detection System - Integrated Video + Audio Analysis
+"""
+Deception Detection System - Streamlit Cloud Deployment
+Integrated Video + Audio Analysis for Lie Detection
+"""
+
 import streamlit as st
 import cv2
 import numpy as np
 import pandas as pd
 import tempfile
 import time
+import os
 from datetime import datetime
 import warnings
 import plotly.graph_objects as go
@@ -12,55 +17,13 @@ import plotly.express as px
 import av
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 import queue
-import dlib
 import librosa
 import speech_recognition as sr
 import subprocess
-import os
-import urllib.request
-import bz2
-import shutil
 from collections import deque
-import joblib
-import json
 import utils
 
 warnings.filterwarnings('ignore')
-
-# ============================================
-# DOWNLOAD SHAPE PREDICTOR
-# ============================================
-
-@st.cache_resource
-def download_shape_predictor():
-    """Download dlib shape predictor if not exists"""
-    if not os.path.exists("shape_predictor_68_face_landmarks.dat"):
-        with st.spinner("Downloading face landmark detector (this may take a minute)..."):
-            url = "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2"
-            urllib.request.urlretrieve(url, "shape_predictor_68_face_landmarks.dat.bz2")
-            with bz2.open("shape_predictor_68_face_landmarks.dat.bz2", 'rb') as src, \
-                 open("shape_predictor_68_face_landmarks.dat", "wb") as dst:
-                shutil.copyfileobj(src, dst)
-            os.remove("shape_predictor_68_face_landmarks.dat.bz2")
-    return dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
-
-# ============================================
-# LOAD ML MODEL (if available)
-# ============================================
-
-@st.cache_resource
-def load_ml_model():
-    """Load trained XGBoost model"""
-    try:
-        if os.path.exists('model/xgboost_model.pkl'):
-            model = joblib.load('model/xgboost_model.pkl')
-            imputer = joblib.load('model/imputer.pkl')
-            with open('model/feature_columns.json', 'r') as f:
-                feature_columns = json.load(f)
-            return model, imputer, feature_columns
-    except Exception as e:
-        st.warning(f"ML model not loaded: {e}")
-    return None, None, None
 
 # Page configuration
 st.set_page_config(
@@ -155,11 +118,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Load models
-predictor = download_shape_predictor()
-detector = dlib.get_frontal_face_detector()
-ml_model, ml_imputer, ml_feature_columns = load_ml_model()
-
 # Helper functions
 def get_color_for_score(score):
     if score >= 60:
@@ -197,17 +155,88 @@ def create_gauge_chart(score, title="Deception Score"):
     fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font={'color': 'white'}, height=300)
     return fig
 
-def predict_with_ml(features_dict):
-    """Use trained model for prediction"""
-    if ml_model is None:
-        return None
-    try:
-        feature_vector = [features_dict.get(col, 0) for col in ml_feature_columns]
-        X = np.array(feature_vector).reshape(1, -1)
-        X_imputed = ml_imputer.transform(X)
-        return ml_model.predict_proba(X_imputed)[0][1] * 100
-    except:
-        return None
+def calculate_deception_score(features):
+    """Rule-based scoring from video features"""
+    score = 0
+    indicators = []
+    
+    if features.get('blink_rate', 0) > 30:
+        score += 15
+        indicators.append(('Elevated blink rate', 'high'))
+    elif features.get('blink_rate', 0) < 10:
+        score += 10
+        indicators.append(('Reduced blink rate', 'medium'))
+    
+    gaze_aversion = features.get('gaze_left_ratio', 0) + features.get('gaze_right_ratio', 0)
+    if gaze_aversion > 0.6:
+        score += 20
+        indicators.append(('Frequent gaze aversion', 'high'))
+    elif gaze_aversion > 0.4:
+        score += 10
+        indicators.append(('Occasional gaze aversion', 'medium'))
+    
+    if features.get('avg_mouth_open_ratio', 0) > 0.3:
+        score += 10
+        indicators.append(('Increased mouth opening', 'medium'))
+    
+    if features.get('avg_lip_compression', 0) > 15:
+        score += 15
+        indicators.append(('Lip compression detected', 'high'))
+    
+    if features.get('avg_facial_asymmetry', 0) > 10:
+        score += 15
+        indicators.append(('Facial asymmetry detected', 'medium'))
+    
+    if features.get('micro_expression_frequency', 0) > 2:
+        score += 20
+        indicators.append(('Frequent micro-expressions', 'high'))
+    elif features.get('micro_expression_frequency', 0) > 1:
+        score += 10
+        indicators.append(('Occasional micro-expressions', 'medium'))
+    
+    if features.get('head_nod_frequency', 0) > 1.5:
+        score += 5
+        indicators.append(('Excessive head nodding', 'medium'))
+    
+    if features.get('head_shake_frequency', 0) > 1:
+        score += 5
+        indicators.append(('Head shaking detected', 'medium'))
+    
+    return min(100, score), indicators
+
+def calculate_audio_score(audio_features):
+    """Calculate deception score from audio features"""
+    if not audio_features:
+        return 0, []
+    
+    score = 0
+    indicators = []
+    
+    if audio_features.get('std_pitch', 0) > 30:
+        score += 20
+        indicators.append(('High pitch variation', 'high'))
+    
+    if audio_features.get('std_energy', 0) > 0.05:
+        score += 15
+        indicators.append(('Inconsistent energy', 'medium'))
+    
+    tempo = audio_features.get('speech_tempo', 120)
+    if tempo > 160:
+        score += 15
+        indicators.append(('Rapid speech', 'medium'))
+    elif tempo < 100:
+        score += 15
+        indicators.append(('Slow speech', 'medium'))
+    
+    if audio_features.get('energy_range', 0) > 0.15:
+        score += 15
+        indicators.append(('Wide energy range', 'medium'))
+    
+    if audio_features.get('speech_activity', 0) < 0.4:
+        score += 10
+        indicators.append(('Low speech activity', 'medium'))
+    
+    return min(100, score), indicators
 
 # Initialize session state
 if 'analysis_results' not in st.session_state:
@@ -225,6 +254,7 @@ class VideoProcessor(VideoProcessorBase):
         self.blink_counter = 0
         self.blink_rate = 0
         self.eye_closed_start = None
+        self.gaze_durations = {'left': 0, 'right': 0, 'center': 0}
         self.mar_values = deque(maxlen=300)
         self.asymmetry_values = deque(maxlen=300)
         self.lip_comp_values = deque(maxlen=300)
@@ -238,6 +268,8 @@ class VideoProcessor(VideoProcessorBase):
         self.features_queue = queue.Queue(maxsize=5)
         self.last_process_time = time.time()
         self.fps_target = 10
+        self.prev_head_pitch = None
+        self.prev_head_yaw = None
 
     def recv(self, frame):
         current_time = time.time()
@@ -251,11 +283,12 @@ class VideoProcessor(VideoProcessorBase):
         if current_time - self.last_process_time >= 1.0 / self.fps_target:
             self.last_process_time = current_time
             
-            faces = detector(gray, 0)
+            faces = utils.detector(gray, 0)
             
             if len(faces) > 0:
-                landmarks = predictor(gray, faces[0])
+                landmarks = utils.predictor(gray, faces[0])
                 landmarks_list = [(landmarks.part(i).x, landmarks.part(i).y) for i in range(68)]
+                h, w = img.shape[:2]
                 
                 # Blink detection
                 left_ear = utils.eye_aspect_ratio(landmarks_list, utils.LEFT_EYE_INDICES)
@@ -273,6 +306,10 @@ class VideoProcessor(VideoProcessorBase):
                 if self.frame_count > 0:
                     self.blink_rate = (self.blink_counter / (self.frame_count / 30)) * 60
                 
+                # Gaze detection
+                gaze = utils.gaze_direction(landmarks_list, w)
+                self.gaze_durations[gaze] += 1
+                
                 # Mouth features
                 mar = utils.mouth_aspect_ratio(landmarks_list)
                 self.mar_values.append(mar)
@@ -284,11 +321,20 @@ class VideoProcessor(VideoProcessorBase):
                 self.lip_comp_values.append(lip_comp)
                 
                 # Head pose
-                h, w = img.shape[:2]
                 pitch, yaw, roll = utils.head_pose(landmarks_list, w, h)
                 self.head_pitch_values.append(pitch)
                 self.head_yaw_values.append(yaw)
                 self.head_roll_values.append(roll)
+                
+                # Head nods and shakes
+                if self.prev_head_pitch is not None:
+                    if abs(self.prev_head_pitch - pitch) > 5:
+                        self.nod_count += 1
+                    if self.prev_head_yaw is not None and abs(yaw - self.prev_head_yaw) > 10:
+                        self.shake_count += 1
+                
+                self.prev_head_pitch = pitch
+                self.prev_head_yaw = yaw
                 
                 # Micro-expressions
                 if self.prev_landmarks is not None:
@@ -297,31 +343,31 @@ class VideoProcessor(VideoProcessorBase):
                         self.micro_expression_frames += 1
                 self.prev_landmarks = landmarks_list
                 
-                # Extract features every 90 frames
+                # Extract features periodically
                 if self.frame_count % 90 == 0 and self.frame_count >= 90:
                     duration_sec = self.frame_count / 30
-                    total_frames = max(1, self.frame_count)
+                    processed_frames = self.frame_count
                     
                     features = {
                         'blink_rate': min(float(self.blink_rate), 45.0),
                         'avg_blink_duration': 0.2,
-                        'gaze_left_ratio': 0.2,
-                        'gaze_right_ratio': 0.2,
-                        'gaze_center_ratio': 0.6,
+                        'gaze_left_ratio': self.gaze_durations['left'] / max(processed_frames, 1),
+                        'gaze_right_ratio': self.gaze_durations['right'] / max(processed_frames, 1),
+                        'gaze_center_ratio': self.gaze_durations['center'] / max(processed_frames, 1),
                         'avg_mouth_open_ratio': float(np.mean(self.mar_values)) if self.mar_values else 0.0,
                         'std_mouth_open_ratio': float(np.std(self.mar_values)) if self.mar_values else 0.0,
                         'avg_facial_asymmetry': float(np.mean(self.asymmetry_values)) if self.asymmetry_values else 0.0,
                         'std_facial_asymmetry': float(np.std(self.asymmetry_values)) if self.asymmetry_values else 0.0,
                         'avg_lip_compression': float(np.mean(self.lip_comp_values)) if self.lip_comp_values else 0.0,
-                        'micro_expression_frequency': float(self.micro_expression_frames) / max(duration_sec, 0.1),
+                        'micro_expression_frequency': self.micro_expression_frames / max(duration_sec, 0.1),
                         'avg_head_pitch': float(np.mean(self.head_pitch_values)) if self.head_pitch_values else 0.0,
                         'std_head_pitch': float(np.std(self.head_pitch_values)) if self.head_pitch_values else 0.0,
                         'avg_head_yaw': float(np.mean(self.head_yaw_values)) if self.head_yaw_values else 0.0,
                         'std_head_yaw': float(np.std(self.head_yaw_values)) if self.head_yaw_values else 0.0,
                         'avg_head_roll': float(np.mean(self.head_roll_values)) if self.head_roll_values else 0.0,
                         'std_head_roll': float(np.std(self.head_roll_values)) if self.head_roll_values else 0.0,
-                        'head_nod_frequency': float(self.nod_count) / max(duration_sec, 0.1),
-                        'head_shake_frequency': float(self.shake_count) / max(duration_sec, 0.1),
+                        'head_nod_frequency': self.nod_count / max(duration_sec, 0.1),
+                        'head_shake_frequency': self.shake_count / max(duration_sec, 0.1),
                         'head_tilt_frequency': 0,
                         'duration_seconds': duration_sec
                     }
@@ -349,7 +395,8 @@ class AudioAnalyzer:
         try:
             self.y, self.sr = librosa.load(self.audio_path, sr=None, duration=60)
             return self.y, self.sr
-        except:
+        except Exception as e:
+            st.warning(f"Could not load audio: {e}")
             return None, None
     
     def extract_features(self):
@@ -385,8 +432,14 @@ class AudioAnalyzer:
             features['speech_activity'] = float(np.mean(zcr > 0.01))
             
         except Exception as e:
-            features = {'speech_tempo': 120.0, 'avg_energy': 0.5, 'std_energy': 0.05, 
-                       'avg_pitch': 150.0, 'std_pitch': 20.0, 'speech_activity': 0.5}
+            features = {
+                'speech_tempo': 120.0,
+                'avg_energy': 0.5,
+                'std_energy': 0.05,
+                'avg_pitch': 150.0,
+                'std_pitch': 20.0,
+                'speech_activity': 0.5
+            }
         
         return features
     
@@ -397,59 +450,139 @@ class AudioAnalyzer:
                 recognizer.adjust_for_ambient_noise(source, duration=1)
                 audio = recognizer.record(source)
                 return recognizer.recognize_google(audio)
-        except:
+        except Exception as e:
             return ""
 
-def calculate_deception_score(features):
-    """Rule-based scoring"""
-    score = 0
-    
-    if features.get('blink_rate', 0) > 30:
-        score += 15
-    elif features.get('blink_rate', 0) < 10:
-        score += 10
-    
-    gaze_aversion = features.get('gaze_left_ratio', 0) + features.get('gaze_right_ratio', 0)
-    if gaze_aversion > 0.6:
-        score += 20
-    elif gaze_aversion > 0.4:
-        score += 10
-    
-    if features.get('avg_mouth_open_ratio', 0) > 0.3:
-        score += 10
-    
-    if features.get('avg_lip_compression', 0) > 15:
-        score += 15
-    
-    if features.get('avg_facial_asymmetry', 0) > 10:
-        score += 15
-    
-    if features.get('micro_expression_frequency', 0) > 2:
-        score += 20
-    elif features.get('micro_expression_frequency', 0) > 1:
-        score += 10
-    
-    if features.get('head_nod_frequency', 0) > 1.5:
-        score += 5
-    
-    if features.get('head_shake_frequency', 0) > 1:
-        score += 5
-    
-    return min(100, score)
+# ============================================
+# VIDEO FILE PROCESSOR
+# ============================================
 
-def calculate_audio_score(audio_features):
-    score = 0
-    if audio_features.get('std_pitch', 0) > 30:
-        score += 20
-    if audio_features.get('std_energy', 0) > 0.05:
-        score += 15
-    if audio_features.get('speech_tempo', 120) > 160 or audio_features.get('speech_tempo', 120) < 100:
-        score += 15
-    if audio_features.get('energy_range', 0) > 0.15:
-        score += 15
-    if audio_features.get('speech_activity', 0) < 0.4:
-        score += 10
-    return min(100, score)
+def process_video_file(video_path, progress_callback=None):
+    """Extract features from uploaded video file"""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise Exception("Cannot open video")
+    
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps
+    
+    if duration > 60:
+        cap.release()
+        raise Exception(f"Video too long: {duration:.1f}s (max 60s)")
+    
+    # Feature tracking
+    frame_count = 0
+    processed_frames = 0
+    blinks = 0
+    gaze_durations = {'left': 0, 'right': 0, 'center': 0}
+    mar_values = []
+    asymmetry_values = []
+    lip_comp_values = []
+    head_pitch_values = []
+    head_yaw_values = []
+    head_roll_values = []
+    nod_count = 0
+    shake_count = 0
+    prev_head_pitch = None
+    prev_head_yaw = None
+    prev_landmarks = None
+    micro_expressions = 0
+    
+    process_every_n = max(1, int(fps / 10))
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        frame_count += 1
+        if frame_count % process_every_n != 0:
+            continue
+        
+        processed_frames += 1
+        h, w = frame.shape[:2]
+        
+        landmarks_list = utils.get_landmarks(frame)
+        if landmarks_list is None:
+            continue
+        
+        # Blink detection
+        left_ear = utils.eye_aspect_ratio(landmarks_list, utils.LEFT_EYE_INDICES)
+        right_ear = utils.eye_aspect_ratio(landmarks_list, utils.RIGHT_EYE_INDICES)
+        ear = (left_ear + right_ear) / 2.0
+        if ear < 0.2:
+            blinks += 1
+        
+        # Gaze
+        gaze = utils.gaze_direction(landmarks_list, w)
+        gaze_durations[gaze] += 1
+        
+        # Mouth features
+        mar_values.append(utils.mouth_aspect_ratio(landmarks_list))
+        asymmetry_values.append(utils.facial_asymmetry(landmarks_list))
+        lip_comp_values.append(utils.lip_compression(landmarks_list))
+        
+        # Head pose
+        pitch, yaw, roll = utils.head_pose(landmarks_list, w, h)
+        head_pitch_values.append(pitch)
+        head_yaw_values.append(yaw)
+        head_roll_values.append(roll)
+        
+        if prev_head_pitch is not None:
+            if abs(prev_head_pitch - pitch) > 5:
+                nod_count += 1
+            if prev_head_yaw is not None and abs(yaw - prev_head_yaw) > 10:
+                shake_count += 1
+        
+        prev_head_pitch = pitch
+        prev_head_yaw = yaw
+        
+        # Micro-expressions
+        if prev_landmarks is not None:
+            movement = utils.micro_expression_magnitude(prev_landmarks, landmarks_list)
+            if movement > 5.0:
+                micro_expressions += 1
+        prev_landmarks = landmarks_list
+        
+        if progress_callback and processed_frames % max(1, total_frames // 20) == 0:
+            progress_callback(min(95, int(processed_frames / max(total_frames // process_every_n, 1) * 100)))
+    
+    cap.release()
+    
+    if processed_frames == 0:
+        raise Exception("No faces detected in video")
+    
+    duration_sec = frame_count / fps
+    
+    features = {
+        'blink_rate': (blinks / duration_sec) * 60 if duration_sec > 0 else 0,
+        'avg_blink_duration': 0.2,
+        'gaze_left_ratio': gaze_durations['left'] / max(processed_frames, 1),
+        'gaze_right_ratio': gaze_durations['right'] / max(processed_frames, 1),
+        'gaze_center_ratio': gaze_durations['center'] / max(processed_frames, 1),
+        'avg_mouth_open_ratio': np.mean(mar_values) if mar_values else 0,
+        'std_mouth_open_ratio': np.std(mar_values) if mar_values else 0,
+        'avg_facial_asymmetry': np.mean(asymmetry_values) if asymmetry_values else 0,
+        'std_facial_asymmetry': np.std(asymmetry_values) if asymmetry_values else 0,
+        'avg_lip_compression': np.mean(lip_comp_values) if lip_comp_values else 0,
+        'micro_expression_frequency': micro_expressions / max(duration_sec, 0.1),
+        'avg_head_pitch': np.mean(head_pitch_values) if head_pitch_values else 0,
+        'std_head_pitch': np.std(head_pitch_values) if head_pitch_values else 0,
+        'avg_head_yaw': np.mean(head_yaw_values) if head_yaw_values else 0,
+        'std_head_yaw': np.std(head_yaw_values) if head_yaw_values else 0,
+        'avg_head_roll': np.mean(head_roll_values) if head_roll_values else 0,
+        'std_head_roll': np.std(head_roll_values) if head_roll_values else 0,
+        'head_nod_frequency': nod_count / max(duration_sec, 0.1),
+        'head_shake_frequency': shake_count / max(duration_sec, 0.1),
+        'head_tilt_frequency': 0,
+        'duration_seconds': duration_sec
+    }
+    
+    return features, duration_sec
 
 # ============================================
 # MAIN UI
@@ -462,24 +595,22 @@ st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
 # Sidebar
 with st.sidebar:
     st.markdown("### 🤖 System Status")
-    if ml_model is not None:
-        st.success("✅ ML Model: Loaded")
-    else:
-        st.info("📊 Using rule-based scoring")
+    st.success("✅ dlib: Loaded")
+    st.success("✅ Face Detector: Active")
     
     st.markdown("---")
     st.markdown("### 🎯 Features Analyzed")
     st.markdown("""
-    **Video Analysis (60%):**
+    **Video Analysis (60% weight):**
     - Blink rate & duration
-    - Gaze direction
-    - Micro-expressions
+    - Gaze direction tracking
+    - Micro-expression detection
     - Facial asymmetry
     - Lip compression
-    - Head movement
+    - Head movement patterns
 
-    **Audio Analysis (40%):**
-    - Speech rate
+    **Audio Analysis (40% weight):**
+    - Speech rate & tempo
     - Pitch variation
     - Energy dynamics
     - Speech activity
@@ -495,13 +626,16 @@ with st.sidebar:
 # Tabs
 tab1, tab2, tab3 = st.tabs(["🎥 LIVE ANALYSIS", "📁 FILE UPLOAD", "📊 REPORTS"])
 
-# Tab 1: Live Analysis
+# ============================================
+# TAB 1: LIVE ANALYSIS
+# ============================================
 with tab1:
     col1, col2 = st.columns([2, 1])
     
     with col1:
         st.markdown('<div class="stCard">', unsafe_allow_html=True)
         st.subheader("🎥 Live Camera Feed")
+        st.info("Click 'Start' below, then wait 10 seconds before analyzing", icon="ℹ️")
         
         webrtc_ctx = webrtc_streamer(
             key="deception-detection",
@@ -511,44 +645,47 @@ with tab1:
             async_processing=True,
         )
         
-        if st.button("🔍 Analyze Now", use_container_width=True):
-            if webrtc_ctx and webrtc_ctx.video_processor:
-                processor = webrtc_ctx.video_processor
-                if not processor.features_queue.empty():
-                    features = processor.features_queue.get()
-                    
-                    # Try ML first, fallback to rule-based
-                    ml_score = predict_with_ml(features)
-                    if ml_score is not None:
-                        score = ml_score
-                        st.success("✅ ML Model Prediction")
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            if st.button("🔍 Analyze Now", use_container_width=True):
+                if webrtc_ctx and webrtc_ctx.video_processor:
+                    processor = webrtc_ctx.video_processor
+                    if not processor.features_queue.empty():
+                        features = processor.features_queue.get()
+                        score, indicators = calculate_deception_score(features)
+                        classification = get_classification_for_score(score)
+                        
+                        st.session_state.analysis_results = {
+                            'score': score,
+                            'classification': classification,
+                            'indicators': indicators,
+                            'features': features,
+                            'type': 'Live',
+                            'video_score': score,
+                            'audio_score': 0
+                        }
+                        
+                        st.session_state.analysis_history.append({
+                            'timestamp': datetime.now(),
+                            'type': 'Live',
+                            'score': score,
+                            'classification': classification
+                        })
+                        
+                        st.success(f"Analysis Complete! Score: {score:.1f}")
+                        st.balloons()
+                        st.rerun()
                     else:
-                        score = calculate_deception_score(features)
-                        st.info("Rule-based scoring")
-                    
-                    classification = get_classification_for_score(score)
-                    
-                    st.session_state.analysis_results = {
-                        'score': score,
-                        'classification': classification,
-                        'features': features,
-                        'type': 'Live'
-                    }
-                    
-                    st.session_state.analysis_history.append({
-                        'timestamp': datetime.now(),
-                        'type': 'Live',
-                        'score': score,
-                        'classification': classification
-                    })
-                    
-                    st.success(f"Analysis Complete! Score: {score:.1f}")
-                    st.balloons()
-                    st.rerun()
+                        st.warning("Please wait 10 seconds for data collection, then click Analyze again.")
                 else:
-                    st.warning("Please wait 10 seconds for data collection")
-            else:
-                st.error("Start the camera first")
+                    st.error("Please start the camera first by clicking 'Start' on the video player.")
+        
+        with col_btn2:
+            if st.button("🔄 Reset", use_container_width=True):
+                st.session_state.analysis_results = None
+                st.success("Reset complete!")
+                st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
     
@@ -556,179 +693,251 @@ with tab1:
         st.markdown('<div class="stCard">', unsafe_allow_html=True)
         st.subheader("📋 Instructions")
         st.markdown("""
-        1. Click **Start** on the camera
-        2. Allow camera access
-        3. Position face clearly
-        4. Wait **10 seconds**
-        5. Click **Analyze Now**
+        1. Click **Start** on the camera player
+        2. Allow camera access when prompted
+        3. Position your face clearly in frame
+        4. Wait **10 seconds** for data collection
+        5. Click **Analyze Now** for results
+        6. View detailed report in Reports tab
+
+        **Tips for best results:**
+        - Ensure good lighting
+        - Keep face centered
+        - Avoid extreme head movements
         """)
         st.markdown('</div>', unsafe_allow_html=True)
 
-# Tab 2: File Upload
+# ============================================
+# TAB 2: FILE UPLOAD
+# ============================================
 with tab2:
     st.markdown('<div class="stCard">', unsafe_allow_html=True)
-    st.subheader("📁 Upload File for Analysis")
+    st.subheader("📁 Upload File for Complete Analysis")
+    st.markdown("Upload a video file to analyze both **visual and audio** cues simultaneously")
     
     uploaded_file = st.file_uploader(
-        "Choose video or audio file",
-        type=['mp4', 'avi', 'mov', 'mp3', 'wav', 'm4a']
+        "Choose a video file",
+        type=['mp4', 'avi', 'mov', 'mkv'],
+        help="Supported formats: MP4, AVI, MOV, MKV (max 60 seconds)"
     )
     
     if uploaded_file is not None:
-        file_ext = uploaded_file.name.split('.')[-1].lower()
-        temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_ext}').name
-        with open(temp_path, 'wb') as f:
-            f.write(uploaded_file.read())
+        # Save uploaded file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            video_path = tmp_file.name
         
-        if file_ext in ['mp4', 'avi', 'mov']:
-            st.video(temp_path)
-        else:
-            st.audio(temp_path)
+        st.video(video_path)
         
         if st.button("🎯 Analyze File", use_container_width=True, type="primary"):
             progress_bar = st.progress(0)
-            status = st.empty()
+            status_text = st.empty()
             
             try:
                 # Video analysis
-                status.info("Analyzing video...")
-                progress_bar.progress(30)
+                status_text.info("🎥 Analyzing facial expressions and body language...")
+                progress_bar.progress(20)
                 
-                # Extract audio from video if needed
-                audio_path = temp_path
-                if file_ext in ['mp4', 'avi', 'mov']:
-                    audio_path = temp_path.replace(f'.{file_ext}', '_audio.wav')
-                    subprocess.run(['ffmpeg', '-i', temp_path, '-acodec', 'pcm_s16le', 
-                                   '-ar', '16000', audio_path, '-y', '-loglevel', 'quiet'], 
-                                   capture_output=True)
+                video_features, duration = process_video_file(video_path, lambda p: progress_bar.progress(p))
+                video_score, video_indicators = calculate_deception_score(video_features)
                 
-                # Audio analysis
-                status.info("Analyzing audio...")
                 progress_bar.progress(60)
+                status_text.info("🎙️ Extracting audio from video...")
+                
+                # Extract audio from video
+                audio_path = video_path.replace('.mp4', '_audio.wav')
+                subprocess.run([
+                    'ffmpeg', '-i', video_path, '-acodec', 'pcm_s16le', 
+                    '-ar', '16000', audio_path, '-y', '-loglevel', 'quiet'
+                ], capture_output=True)
+                
+                status_text.info("🎙️ Analyzing speech patterns...")
+                progress_bar.progress(75)
+                
                 audio_analyzer = AudioAnalyzer(audio_path)
                 audio_analyzer.load_audio()
                 audio_features = audio_analyzer.extract_features()
                 transcript = audio_analyzer.transcribe()
-                audio_score = calculate_audio_score(audio_features)
+                audio_score, audio_indicators = calculate_audio_score(audio_features)
                 
-                # Simulate video features (since we can't process video file fully in this simplified version)
-                video_features = {
-                    'blink_rate': 15.0, 'gaze_left_ratio': 0.2, 'gaze_right_ratio': 0.2,
-                    'avg_mouth_open_ratio': 0.2, 'avg_lip_compression': 10.0,
-                    'avg_facial_asymmetry': 8.0, 'micro_expression_frequency': 1.0,
-                    'head_nod_frequency': 0.5, 'head_shake_frequency': 0.3
-                }
-                video_score = calculate_deception_score(video_features)
-                
-                # Combined score
+                # Combined score (60% video, 40% audio)
                 combined_score = (video_score * 0.6) + (audio_score * 0.4)
                 classification = get_classification_for_score(combined_score)
                 
                 progress_bar.progress(100)
-                status.success("Analysis complete!")
+                status_text.success("✅ Complete analysis finished!")
                 
                 st.session_state.analysis_results = {
                     'score': combined_score,
                     'classification': classification,
                     'video_score': video_score,
                     'audio_score': audio_score,
+                    'video_indicators': video_indicators,
+                    'audio_indicators': audio_indicators,
                     'transcript': transcript,
-                    'type': 'File'
+                    'features': video_features,
+                    'type': 'File Upload'
                 }
                 
                 st.session_state.analysis_history.append({
                     'timestamp': datetime.now(),
-                    'type': 'File',
+                    'type': 'File Upload',
                     'filename': uploaded_file.name,
                     'score': combined_score,
-                    'classification': classification
+                    'classification': classification,
+                    'video_score': video_score,
+                    'audio_score': audio_score
                 })
                 
                 st.balloons()
                 st.rerun()
                 
             except Exception as e:
-                st.error(f"Error: {str(e)}")
+                progress_bar.empty()
+                st.error(f"Analysis failed: {str(e)}")
+                st.info("Make sure the video contains a clear face and is under 60 seconds.")
+            finally:
+                # Cleanup
+                try:
+                    os.unlink(video_path)
+                    if os.path.exists(audio_path):
+                        os.unlink(audio_path)
+                except:
+                    pass
     
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Tab 3: Reports
+# ============================================
+# TAB 3: REPORTS
+# ============================================
 with tab3:
     if st.session_state.analysis_results:
         results = st.session_state.analysis_results
         
         st.markdown('<div class="combined-score">', unsafe_allow_html=True)
-        gauge = create_gauge_chart(results['score'], "Deception Score")
+        
+        # Main gauge
+        gauge = create_gauge_chart(results['score'], "Combined Deception Score")
         st.plotly_chart(gauge, use_container_width=True)
-        st.markdown(f'<h2 style="text-align: center; color: {get_color_for_score(results["score"])};">{results["classification"]}</h2>', unsafe_allow_html=True)
+        
+        color = get_color_for_score(results['score'])
+        st.markdown(f'<h2 style="text-align: center; color: {color};">{results["classification"]}</h2>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         
+        # Video and Audio scores
         col1, col2 = st.columns(2)
         
         with col1:
             st.markdown('<div class="stCard">', unsafe_allow_html=True)
-            st.subheader("📊 Detailed Metrics")
-            if 'features' in results:
-                features = results['features']
-                st.metric("Blink Rate", f"{features.get('blink_rate', 0):.0f}/min")
-                st.metric("Micro-expressions", f"{features.get('micro_expression_frequency', 0):.2f}/s")
-                st.metric("Facial Asymmetry", f"{features.get('avg_facial_asymmetry', 0):.1f}")
+            st.subheader("🎥 Video Analysis Score")
+            video_gauge = create_gauge_chart(results.get('video_score', 0), "Video Score")
+            st.plotly_chart(video_gauge, use_container_width=True)
+            
+            if 'video_indicators' in results and results['video_indicators']:
+                st.markdown("**Detected Indicators:**")
+                for indicator, level in results['video_indicators']:
+                    badge_class = "high" if level == "high" else "medium" if level == "medium" else "low"
+                    st.markdown(f'<span class="indicator-badge {badge_class}">{indicator}</span>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
         
         with col2:
             st.markdown('<div class="stCard">', unsafe_allow_html=True)
-            st.subheader("🎙️ Audio Analysis")
-            if 'audio_score' in results:
-                st.metric("Audio Score", f"{results['audio_score']:.0f}")
-            if 'transcript' in results and results['transcript']:
-                st.markdown("**Transcript:**")
-                st.info(results['transcript'][:200])
+            st.subheader("🎙️ Audio Analysis Score")
+            audio_gauge = create_gauge_chart(results.get('audio_score', 0), "Audio Score")
+            st.plotly_chart(audio_gauge, use_container_width=True)
+            
+            if 'audio_indicators' in results and results['audio_indicators']:
+                st.markdown("**Detected Indicators:**")
+                for indicator, level in results['audio_indicators']:
+                    badge_class = "high" if level == "high" else "medium" if level == "medium" else "low"
+                    st.markdown(f'<span class="indicator-badge {badge_class}">{indicator}</span>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
         
-        # Export option
+        # Detailed metrics
+        st.markdown('<div class="stCard">', unsafe_allow_html=True)
+        st.subheader("📊 Detailed Behavioral Metrics")
+        
+        if 'features' in results:
+            features = results['features']
+            metric_cols = st.columns(4)
+            
+            with metric_cols[0]:
+                st.metric("Blink Rate", f"{features.get('blink_rate', 0):.0f}/min")
+            with metric_cols[1]:
+                gaze_aversion = (features.get('gaze_left_ratio', 0) + features.get('gaze_right_ratio', 0)) * 100
+                st.metric("Gaze Aversion", f"{gaze_aversion:.0f}%")
+            with metric_cols[2]:
+                st.metric("Micro-expressions", f"{features.get('micro_expression_frequency', 0):.2f}/s")
+            with metric_cols[3]:
+                st.metric("Facial Asymmetry", f"{features.get('avg_facial_asymmetry', 0):.1f}")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Transcript
+        if 'transcript' in results and results['transcript']:
+            st.markdown('<div class="stCard">', unsafe_allow_html=True)
+            st.subheader("📝 Audio Transcript")
+            st.info(results['transcript'][:500])
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Export button
         if st.button("📥 Export Results (CSV)", use_container_width=True):
-            export_df = pd.DataFrame([{
+            export_data = {
                 'timestamp': datetime.now(),
-                'score': results['score'],
+                'combined_score': results['score'],
+                'video_score': results.get('video_score', 0),
+                'audio_score': results.get('audio_score', 0),
                 'classification': results['classification'],
                 'type': results.get('type', 'Unknown')
-            }])
+            }
+            if 'features' in results:
+                for k, v in results['features'].items():
+                    export_data[f'video_{k}'] = v
+            export_df = pd.DataFrame([export_data])
             csv = export_df.to_csv(index=False)
-            st.download_button("Download CSV", csv, "analysis_results.csv", "text/csv")
+            st.download_button("Download CSV", csv, f"analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", "text/csv")
     
     else:
-        st.info("No analysis results yet. Run a live analysis or upload a file.")
-
-# History section in reports tab
-st.markdown('<div class="stCard">', unsafe_allow_html=True)
-st.subheader("📜 Analysis History")
-
-if st.session_state.analysis_history:
-    history_df = pd.DataFrame(st.session_state.analysis_history)
-    st.dataframe(history_df, use_container_width=True)
+        st.info("No analysis results yet. Start a live recording or upload a file to begin analysis.")
     
-    # History chart
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=history_df['timestamp'],
-        y=history_df['score'],
-        mode='lines+markers',
-        name='Score',
-        line=dict(color='#667eea', width=2)
-    ))
-    fig.add_hline(y=40, line_dash="dash", line_color="#28a745")
-    fig.add_hline(y=60, line_dash="dash", line_color="#dc3545")
-    fig.update_layout(title="Score History", height=300, paper_bgcolor='rgba(0,0,0,0)')
-    st.plotly_chart(fig, use_container_width=True)
+    # History section
+    st.markdown('<div class="stCard">', unsafe_allow_html=True)
+    st.subheader("📜 Analysis History")
     
-    if st.button("Clear History"):
-        st.session_state.analysis_history = []
-        st.rerun()
-else:
-    st.info("No analysis history yet.")
-
-st.markdown('</div>', unsafe_allow_html=True)
+    if st.session_state.analysis_history:
+        history_df = pd.DataFrame(st.session_state.analysis_history)
+        st.dataframe(history_df, use_container_width=True)
+        
+        # History chart
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=history_df['timestamp'],
+            y=history_df['score'],
+            mode='lines+markers',
+            name='Deception Score',
+            line=dict(color='#667eea', width=2)
+        ))
+        fig.add_hline(y=40, line_dash="dash", line_color="#28a745", annotation_text="Truthful Threshold")
+        fig.add_hline(y=60, line_dash="dash", line_color="#dc3545", annotation_text="Deceptive Threshold")
+        fig.update_layout(
+            title="Score History Over Time",
+            xaxis_title="Date",
+            yaxis_title="Deception Score",
+            height=300,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font={'color': 'white'}
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        if st.button("Clear History", use_container_width=True):
+            st.session_state.analysis_history = []
+            st.rerun()
+    else:
+        st.info("No analysis history yet.")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # Footer
 st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
-st.markdown('<p style="text-align: center; color: rgba(255,255,255,0.5);">Powered by AI & Computer Vision | Deception Detection System</p>', unsafe_allow_html=True)
+st.markdown('<p style="text-align: center; color: rgba(255,255,255,0.5);">Powered by dlib, OpenCV, and AI | Deception Detection System</p>', unsafe_allow_html=True)
